@@ -15,6 +15,26 @@
 
 ## 使用
 
+一键安装并启动：
+
+```bash
+/bin/zsh -c "$(curl -fsSL https://raw.githubusercontent.com/leezhuuuuu/codex-ssh/main/scripts/install.sh)"
+```
+
+安装后默认命令位置：
+
+```text
+~/.local/bin/codex-ssh-manager
+```
+
+如果 `~/.local/bin` 已经在 `PATH` 中，后续可以直接运行：
+
+```bash
+codex-ssh-manager
+```
+
+本地源码运行：
+
 ```bash
 chmod +x scripts/codex-ssh-manager.zsh
 ./scripts/codex-ssh-manager.zsh
