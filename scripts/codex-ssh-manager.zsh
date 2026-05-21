@@ -38,6 +38,36 @@ warn() { say "${C_YELLOW}!${C_RESET} $*"; }
 err() { say "${C_RED}✗${C_RESET} $*" >&2; }
 dim() { say "${C_DIM}$*${C_RESET}"; }
 
+status_item() {
+  local state="$1" title="$2" value="${3:-}" detail="${4:-}"
+  local marker label color
+  case "$state" in
+    ok)
+      marker="✓"; label="正常"; color="$C_GREEN"
+      ;;
+    warn)
+      marker="!"; label="需处理"; color="$C_YELLOW"
+      ;;
+    bad)
+      marker="✗"; label="失败"; color="$C_RED"
+      ;;
+    *)
+      marker="-"; label="信息"; color="$C_BLUE"
+      ;;
+  esac
+
+  if [[ -n "$value" ]]; then
+    say "  ${color}${marker} [$label]${C_RESET} ${C_BOLD}${title}${C_RESET}: $value"
+  else
+    say "  ${color}${marker} [$label]${C_RESET} ${C_BOLD}${title}${C_RESET}"
+  fi
+  [[ -n "$detail" ]] && dim "      $detail"
+}
+
+command_hint() {
+  say "    ${C_CYAN}$*${C_RESET}"
+}
+
 pause() {
   print -n -- "${C_DIM}按回车继续...${C_RESET}"
   read -r _
@@ -490,13 +520,14 @@ upload_public_key_to_target() {
 
 test_ssh_alias() {
   local alias="$1"
-  info "测试免交互 SSH：ssh -F $SSH_CONFIG -o BatchMode=yes $alias true"
+  info "测试 SSH 免密连接"
+  dim "ssh -F $SSH_CONFIG -o BatchMode=yes $alias true"
   if ssh -F "$SSH_CONFIG" -o BatchMode=yes -o ConnectTimeout=8 "$alias" true; then
-    ok "SSH 连接成功：$alias"
+    status_item ok "SSH" "$alias 可连接" "本机已经可以通过 ~/.ssh/config 中的 Host 别名连接。"
     return 0
   fi
-  err "SSH 免交互连接失败：$alias"
-  warn "如果这是首次上传公钥前的主机，失败是正常的。诊断可运行：ssh -F $SSH_CONFIG -v $alias"
+  status_item bad "SSH" "$alias 免密连接失败" "Codex App 也会连接失败；可先运行诊断或重新上传公钥。"
+  warn "诊断命令：ssh -F $SSH_CONFIG -v $alias"
   return 1
 }
 
@@ -519,6 +550,11 @@ extract_managed_field() {
     *) return 1 ;;
   esac
   registry_line "$alias" | awk -F '\t' -v idx="$idx" '{ print $idx }'
+}
+
+kv_get() {
+  local text="$1" key="$2"
+  print -r -- "$text" | awk -F '=' -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }'
 }
 
 add_host_flow() {
@@ -703,25 +739,127 @@ codex_check_flow() {
   choose_host "no" || return 0
   local alias="$CHOSEN_HOST"
 
+  say ""
+  info "步骤 1/2：检查 SSH"
   if ! test_ssh_alias "$alias"; then
-    warn "SSH 不通时，Codex App 也无法使用这个 Host。请先修复 SSH。"
+    say ""
+    status_item bad "整体状态" "暂不可用于 Codex App" "SSH 尚未连通，后续远程 Codex 检查已跳过。"
     return 0
   fi
 
   say ""
-  info "检查远程系统和 codex 命令"
-  ssh -F "$SSH_CONFIG" "$alias" 'printf "kernel=%s\n" "$(uname -s 2>/dev/null || true)"; if [ -r /etc/os-release ]; then . /etc/os-release; printf "os=%s\n" "${PRETTY_NAME:-unknown}"; fi; printf "shell=%s\n" "$SHELL"; printf "codex=%s\n" "$(command -v codex 2>/dev/null || true)"; if command -v codex >/dev/null 2>&1; then codex --version 2>/dev/null || true; fi; printf "node=%s\n" "$(command -v node 2>/dev/null || true)"; printf "npm=%s\n" "$(command -v npm 2>/dev/null || true)"'
+  info "步骤 2/2：检查远程运行环境"
+  local remote_info
+  if ! remote_info="$(ssh -F "$SSH_CONFIG" "$alias" '
+    if [ -r /etc/os-release ]; then
+      . /etc/os-release
+    fi
+    kernel="$(uname -s 2>/dev/null || true)"
+    codex_path="$(command -v codex 2>/dev/null || true)"
+    node_path="$(command -v node 2>/dev/null || true)"
+    npm_path="$(command -v npm 2>/dev/null || true)"
+    printf "kernel=%s\n" "$kernel"
+    printf "os=%s\n" "${PRETTY_NAME:-unknown}"
+    printf "os_id=%s\n" "${ID:-unknown}"
+    printf "os_like=%s\n" "${ID_LIKE:-}"
+    printf "shell=%s\n" "$SHELL"
+    printf "codex_path=%s\n" "$codex_path"
+    if [ -n "$codex_path" ]; then
+      printf "codex_version=%s\n" "$(codex --version 2>/dev/null || true)"
+    else
+      printf "codex_version=\n"
+    fi
+    printf "node_path=%s\n" "$node_path"
+    if [ -n "$node_path" ]; then
+      printf "node_version=%s\n" "$(node --version 2>/dev/null || true)"
+    else
+      printf "node_version=\n"
+    fi
+    printf "npm_path=%s\n" "$npm_path"
+    if [ -n "$npm_path" ]; then
+      printf "npm_version=%s\n" "$(npm --version 2>/dev/null || true)"
+    else
+      printf "npm_version=\n"
+    fi
+  ')"; then
+    status_item bad "远程检查" "无法读取远程环境" "SSH 已连通，但远程命令执行失败。可使用菜单 8 查看详细 SSH 日志。"
+    return 0
+  fi
+
+  local kernel os os_id os_like shell_name codex_path codex_version node_path node_version npm_path npm_version
+  kernel="$(kv_get "$remote_info" kernel)"
+  os="$(kv_get "$remote_info" os)"
+  os_id="$(kv_get "$remote_info" os_id)"
+  os_like="$(kv_get "$remote_info" os_like)"
+  shell_name="$(kv_get "$remote_info" shell)"
+  codex_path="$(kv_get "$remote_info" codex_path)"
+  codex_version="$(kv_get "$remote_info" codex_version)"
+  node_path="$(kv_get "$remote_info" node_path)"
+  node_version="$(kv_get "$remote_info" node_version)"
+  npm_path="$(kv_get "$remote_info" npm_path)"
+  npm_version="$(kv_get "$remote_info" npm_version)"
 
   say ""
-  info "下一步判断"
-  dim "Codex App 要求：本机 ssh $alias 能成功；远程登录 shell 的 PATH 里能找到 codex。"
-  say "如果远程没有 codex，可根据系统选择安装方式："
-  say "  Debian/Ubuntu: sudo apt update && sudo apt install -y nodejs npm && sudo npm i -g @openai/codex"
-  say "  Fedora/RHEL:   sudo dnf install -y nodejs npm && sudo npm i -g @openai/codex"
-  say "  Arch:          sudo pacman -S nodejs npm && sudo npm i -g @openai/codex"
-  say "  macOS:         brew install node && npm i -g @openai/codex"
+  info "状态摘要"
+  status_item ok "SSH" "$alias 可连接" "本机到远程主机的免密 SSH 已满足 Codex App 前置条件。"
+  status_item info "远程系统" "${os:-unknown}" "kernel=${kernel:-unknown}；shell=${shell_name:-unknown}"
+
+  if [[ -n "$node_path" ]]; then
+    status_item ok "Node.js" "$node_path ${node_version:+($node_version)}"
+  else
+    status_item warn "Node.js" "未找到 node" "安装 Codex CLI 前通常需要先安装 Node.js。"
+  fi
+
+  if [[ -n "$npm_path" ]]; then
+    status_item ok "npm" "$npm_path ${npm_version:+($npm_version)}"
+  else
+    status_item warn "npm" "未找到 npm" "无法通过 npm 安装 @openai/codex。"
+  fi
+
+  if [[ -n "$codex_path" ]]; then
+    status_item ok "Codex CLI" "$codex_path ${codex_version:+($codex_version)}" "远程登录 shell 的 PATH 已经能找到 codex。"
+  else
+    status_item warn "Codex CLI" "未安装，或不在远程 PATH 中" "这是你刚才看到 codex= 为空的原因；Codex App 目前还不能用这个远程 Host 启动 Codex。"
+  fi
+
   say ""
-  dim "安装后在远程运行 codex 完成登录，再回到 Codex App → Settings → Connections 添加/启用 $alias。"
+  if [[ -n "$codex_path" ]]; then
+    status_item ok "整体状态" "基本就绪" "接下来去 Codex App 的 Settings → Connections 中添加或启用 $alias。"
+  else
+    status_item warn "整体状态" "还差 Codex CLI" "SSH 已通，但远程缺少 codex 命令。"
+  fi
+
+  if [[ -z "$codex_path" ]]; then
+    say ""
+    info "建议下一步"
+    if [[ "$os_id $os_like" == *debian* || "$os_id $os_like" == *ubuntu* ]]; then
+      say "在远程主机上执行："
+      command_hint "sudo apt update && sudo apt install -y nodejs npm"
+      command_hint "sudo npm i -g @openai/codex"
+    elif [[ "$os_id $os_like" == *fedora* || "$os_id $os_like" == *rhel* || "$os_id $os_like" == *centos* ]]; then
+      say "在远程主机上执行："
+      command_hint "sudo dnf install -y nodejs npm"
+      command_hint "sudo npm i -g @openai/codex"
+    elif [[ "$os_id $os_like" == *arch* ]]; then
+      say "在远程主机上执行："
+      command_hint "sudo pacman -S nodejs npm"
+      command_hint "sudo npm i -g @openai/codex"
+    elif [[ "$kernel" == "Darwin" ]]; then
+      say "在远程主机上执行："
+      command_hint "brew install node"
+      command_hint "npm i -g @openai/codex"
+    else
+      say "远程系统未匹配到内置安装方案，请先安装 Node.js/npm，再执行："
+      command_hint "npm i -g @openai/codex"
+    fi
+    say ""
+    say "安装后继续执行："
+    command_hint "ssh $alias"
+    command_hint "codex"
+    dim "首次运行 codex 需要在远程完成登录。登录完成后，回到本菜单再次选择 7 检查。"
+  fi
+  say ""
+  dim "Codex App 要求：本机 ssh $alias 成功，并且远程登录 shell 的 PATH 中能找到 codex。"
 }
 
 diagnose_flow() {
