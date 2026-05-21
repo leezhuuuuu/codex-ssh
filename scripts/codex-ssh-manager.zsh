@@ -557,6 +557,154 @@ kv_get() {
   print -r -- "$text" | awk -F '=' -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }'
 }
 
+print_manual_codex_install_commands() {
+  local alias="$1" kernel="$2" os_id="$3" os_like="$4"
+
+  if [[ "$os_id $os_like" == *debian* || "$os_id $os_like" == *ubuntu* ]]; then
+    say "在远程主机上执行："
+    command_hint "sudo apt update && sudo apt install -y nodejs npm"
+    command_hint "sudo npm i -g @openai/codex"
+  elif [[ "$os_id $os_like" == *fedora* || "$os_id $os_like" == *rhel* || "$os_id $os_like" == *centos* ]]; then
+    say "在远程主机上执行："
+    command_hint "sudo dnf install -y nodejs npm"
+    command_hint "sudo npm i -g @openai/codex"
+  elif [[ "$os_id $os_like" == *arch* ]]; then
+    say "在远程主机上执行："
+    command_hint "sudo pacman -S nodejs npm"
+    command_hint "sudo npm i -g @openai/codex"
+  elif [[ "$kernel" == "Darwin" ]]; then
+    say "在远程主机上执行："
+    command_hint "brew install node"
+    command_hint "npm i -g @openai/codex"
+  else
+    say "远程系统未匹配到内置安装方案，请先安装 Node.js/npm，再执行："
+    command_hint "npm i -g @openai/codex"
+  fi
+  say ""
+  say "安装后继续执行："
+  command_hint "ssh $alias"
+  command_hint "codex"
+  dim "首次运行 codex 需要在远程完成登录。登录完成后，回到本菜单再次选择 7 检查。"
+}
+
+remote_install_codex() {
+  local alias="$1" kernel="$2" os_id="$3" os_like="$4"
+  local log_file ssh_status install_status install_reason codex_path codex_version
+
+  log_file="$(mktemp)"
+  say ""
+  info "自动安装 Codex CLI"
+  warn "即将在远程主机执行包管理器和 npm 全局安装。"
+  dim "自动安装仅支持 root 用户或免密码 sudo；如果远端需要输入 sudo 密码，会停止并给出手动命令。"
+  dim "安装日志会实时显示，并临时保存到：$log_file"
+  say ""
+
+  ssh -F "$SSH_CONFIG" "$alias" 'sh -s' 2>&1 <<'REMOTE_INSTALL' | tee "$log_file"
+log() {
+  printf '%s\n' "[codex-install] $*"
+}
+
+fail() {
+  printf '%s\n' "INSTALL_STATUS=failed"
+  printf '%s\n' "INSTALL_REASON=$*"
+  exit 1
+}
+
+run_sudo() {
+  if [ -n "$SUDO_CMD" ]; then
+    "$SUDO_CMD" "$@"
+  else
+    "$@"
+  fi
+}
+
+if [ -r /etc/os-release ]; then
+  . /etc/os-release
+fi
+
+KERNEL="$(uname -s 2>/dev/null || true)"
+OS_ID="${ID:-unknown}"
+OS_LIKE="${ID_LIKE:-}"
+
+if [ "$(id -u)" = "0" ]; then
+  SUDO_CMD=""
+elif command -v sudo >/dev/null 2>&1; then
+  if sudo -n true >/dev/null 2>&1; then
+    SUDO_CMD="sudo"
+  else
+    fail "当前用户需要输入 sudo 密码；自动安装无法安全接收密码。请 ssh 登录后按手动命令安装。"
+  fi
+else
+  SUDO_CMD=""
+fi
+
+log "远程系统：${PRETTY_NAME:-$KERNEL}"
+log "当前用户：$(id -un 2>/dev/null || true)"
+
+if ! command -v npm >/dev/null 2>&1; then
+  log "未找到 npm，尝试安装 Node.js/npm。"
+  if command -v apt-get >/dev/null 2>&1; then
+    run_sudo apt-get update || fail "apt-get update 失败。请检查 apt 源、网络或 sudo 权限。"
+    run_sudo apt-get install -y nodejs npm || fail "apt-get 安装 nodejs/npm 失败。"
+  elif command -v dnf >/dev/null 2>&1; then
+    run_sudo dnf install -y nodejs npm || fail "dnf 安装 nodejs/npm 失败。"
+  elif command -v yum >/dev/null 2>&1; then
+    run_sudo yum install -y nodejs npm || fail "yum 安装 nodejs/npm 失败。"
+  elif command -v pacman >/dev/null 2>&1; then
+    run_sudo pacman -Sy --noconfirm nodejs npm || fail "pacman 安装 nodejs/npm 失败。"
+  elif command -v apk >/dev/null 2>&1; then
+    run_sudo apk add nodejs npm || fail "apk 安装 nodejs/npm 失败。"
+  elif command -v zypper >/dev/null 2>&1; then
+    run_sudo zypper --non-interactive install nodejs npm || fail "zypper 安装 nodejs/npm 失败。"
+  elif [ "$KERNEL" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
+    brew install node || fail "brew 安装 node 失败。"
+  else
+    fail "未找到 npm，也未识别可用包管理器。请手动安装 Node.js/npm。"
+  fi
+else
+  log "已找到 npm：$(command -v npm)"
+fi
+
+command -v npm >/dev/null 2>&1 || fail "安装后仍找不到 npm；请检查 PATH。"
+
+log "安装 @openai/codex。"
+if ! run_sudo npm i -g @openai/codex; then
+  fail "npm 全局安装 @openai/codex 失败。常见原因：网络无法访问 npm、权限不足、Node/npm 版本过旧。"
+fi
+
+if ! command -v codex >/dev/null 2>&1; then
+  fail "安装完成后仍无法在 PATH 中找到 codex。请检查 npm 全局 bin 目录是否在 PATH 中。"
+fi
+
+printf '%s\n' "INSTALL_STATUS=ok"
+printf '%s\n' "CODEX_PATH=$(command -v codex)"
+printf '%s\n' "CODEX_VERSION=$(codex --version 2>/dev/null || true)"
+REMOTE_INSTALL
+  ssh_status=${pipestatus[1]}
+
+  install_status="$(awk -F '=' '$1 == "INSTALL_STATUS" { print $2 }' "$log_file" | tail -1)"
+  install_reason="$(awk -F '=' '$1 == "INSTALL_REASON" { sub(/^[^=]*=/, ""); print }' "$log_file" | tail -1)"
+  codex_path="$(awk -F '=' '$1 == "CODEX_PATH" { sub(/^[^=]*=/, ""); print }' "$log_file" | tail -1)"
+  codex_version="$(awk -F '=' '$1 == "CODEX_VERSION" { sub(/^[^=]*=/, ""); print }' "$log_file" | tail -1)"
+
+  say ""
+  if [[ "$ssh_status" -eq 0 && "$install_status" == "ok" ]]; then
+    status_item ok "自动安装" "Codex CLI 安装成功" "${codex_path:-codex}${codex_version:+ ($codex_version)}"
+    say ""
+    say "接下来请在远程主机完成 Codex 登录："
+    command_hint "ssh $alias"
+    command_hint "codex"
+    dim "登录完成后，再回到本菜单选择 7 检查状态。"
+    return 0
+  fi
+
+  status_item bad "自动安装" "安装失败" "${install_reason:-远程安装命令退出失败，详情见上方日志。}"
+  say ""
+  info "失败后可手动安装"
+  print_manual_codex_install_commands "$alias" "$kernel" "$os_id" "$os_like"
+  return 1
+}
+
 add_host_flow() {
   ensure_files
   say ""
@@ -832,31 +980,13 @@ codex_check_flow() {
   if [[ -z "$codex_path" ]]; then
     say ""
     info "建议下一步"
-    if [[ "$os_id $os_like" == *debian* || "$os_id $os_like" == *ubuntu* ]]; then
-      say "在远程主机上执行："
-      command_hint "sudo apt update && sudo apt install -y nodejs npm"
-      command_hint "sudo npm i -g @openai/codex"
-    elif [[ "$os_id $os_like" == *fedora* || "$os_id $os_like" == *rhel* || "$os_id $os_like" == *centos* ]]; then
-      say "在远程主机上执行："
-      command_hint "sudo dnf install -y nodejs npm"
-      command_hint "sudo npm i -g @openai/codex"
-    elif [[ "$os_id $os_like" == *arch* ]]; then
-      say "在远程主机上执行："
-      command_hint "sudo pacman -S nodejs npm"
-      command_hint "sudo npm i -g @openai/codex"
-    elif [[ "$kernel" == "Darwin" ]]; then
-      say "在远程主机上执行："
-      command_hint "brew install node"
-      command_hint "npm i -g @openai/codex"
-    else
-      say "远程系统未匹配到内置安装方案，请先安装 Node.js/npm，再执行："
-      command_hint "npm i -g @openai/codex"
-    fi
+    print_manual_codex_install_commands "$alias" "$kernel" "$os_id" "$os_like"
     say ""
-    say "安装后继续执行："
-    command_hint "ssh $alias"
-    command_hint "codex"
-    dim "首次运行 codex 需要在远程完成登录。登录完成后，回到本菜单再次选择 7 检查。"
+    if confirm "是否现在尝试自动安装 Codex CLI？" "n"; then
+      remote_install_codex "$alias" "$kernel" "$os_id" "$os_like" || true
+    else
+      warn "已跳过自动安装。你可以按上面的命令手动安装。"
+    fi
   fi
   say ""
   dim "Codex App 要求：本机 ssh $alias 成功，并且远程登录 shell 的 PATH 中能找到 codex。"
