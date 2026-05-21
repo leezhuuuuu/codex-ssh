@@ -19,7 +19,7 @@
 一键安装并启动：
 
 ```bash
-/bin/zsh -c "$(curl -fsSL https://raw.githubusercontent.com/leezhuuuuu/codex-ssh/main/scripts/install.sh)"
+/bin/zsh -c 'tmpdir="$(mktemp -d)" && curl -fsSL https://codeload.github.com/leezhuuuuu/codex-ssh/tar.gz/refs/heads/main | tar -xz -C "$tmpdir" && /bin/zsh "$tmpdir"/codex-ssh-main/scripts/install.sh'
 ```
 
 安装后默认命令位置：
@@ -27,6 +27,8 @@
 ```text
 ~/.local/bin/codex-ssh-manager
 ```
+
+再次执行同一条一键安装命令会重新下载最新源码包，并覆盖更新这个命令。
 
 如果 `~/.local/bin` 已经在 `PATH` 中，后续可以直接运行：
 

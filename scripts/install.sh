@@ -4,10 +4,10 @@ emulate -L zsh
 set -euo pipefail
 
 TOOL_NAME="codex-ssh-manager"
-REPO_RAW_BASE="${CODEX_SSH_REPO_RAW_BASE:-https://raw.githubusercontent.com/leezhuuuuu/codex-ssh/main}"
+REPO_ARCHIVE_URL="${CODEX_SSH_REPO_ARCHIVE_URL:-https://codeload.github.com/leezhuuuuu/codex-ssh/tar.gz/refs/heads/main}"
+MANAGER_SOURCE_PATH="scripts/codex-ssh-manager.zsh"
 INSTALL_DIR="${CODEX_SSH_INSTALL_DIR:-$HOME/.local/bin}"
 INSTALL_PATH="$INSTALL_DIR/$TOOL_NAME"
-SOURCE_URL="$REPO_RAW_BASE/scripts/codex-ssh-manager.zsh"
 
 if [[ -t 1 ]] && command -v tput >/dev/null 2>&1; then
   C_RESET="$(tput sgr0)"
@@ -38,18 +38,43 @@ download() {
   fi
 }
 
+download_manager() {
+  local output="$1"
+  local tmpdir archive manager
+
+  if [[ -n "${CODEX_SSH_MANAGER_URL:-}" ]]; then
+    download "$CODEX_SSH_MANAGER_URL" "$output"
+    return 0
+  fi
+
+  tmpdir="$(mktemp -d)"
+  archive="$tmpdir/codex-ssh.tar.gz"
+
+  download "$REPO_ARCHIVE_URL" "$archive"
+  tar -xzf "$archive" -C "$tmpdir"
+
+  manager="$(find "$tmpdir" -path "*/$MANAGER_SOURCE_PATH" -type f -print -quit)"
+  if [[ -z "$manager" ]]; then
+    say "源码包中未找到 $MANAGER_SOURCE_PATH。" >&2
+    return 1
+  fi
+
+  cp "$manager" "$output"
+  rm -rf "$tmpdir"
+}
+
 main() {
   local tmp
   tmp="$(mktemp)"
 
-  info "下载 Codex SSH Manager"
-  download "$SOURCE_URL" "$tmp"
+  info "下载 Codex SSH Manager 最新源码包"
+  download_manager "$tmp"
 
   mkdir -p "$INSTALL_DIR"
   install -m 0755 "$tmp" "$INSTALL_PATH"
   rm -f "$tmp"
 
-  ok "已安装到：$INSTALL_PATH"
+  ok "已覆盖安装到：$INSTALL_PATH"
 
   if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
     warn "$INSTALL_DIR 还不在当前 PATH 中。"
