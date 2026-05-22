@@ -14,6 +14,7 @@
 - 用彩色状态摘要检查远程主机是否已准备好供 Codex App 使用
 - 远程缺少 Codex CLI 时，可在用户确认后自动尝试安装，并在失败时显示原因和手动安装命令
 - 登录远程 Codex CLI，可自动转发本机 `localhost:1455` 到远端回调端口，也支持 `device-auth`
+- 检测 Codex standalone 已安装但 `PATH` 缺少 `~/.local/bin` 的情况，并可自动修复远程 shell 配置
 
 ## 使用
 

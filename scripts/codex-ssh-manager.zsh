@@ -561,6 +561,58 @@ kv_get() {
   print -r -- "$text" | awk -F '=' -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }'
 }
 
+remote_codex_probe() {
+  local alias="$1"
+  ssh -F "$SSH_CONFIG" "$alias" 'sh -s' <<'REMOTE_PROBE'
+codex_path="$(command -v codex 2>/dev/null || true)"
+local_bin="$HOME/.local/bin"
+local_codex="$local_bin/codex"
+standalone_codex="$HOME/.codex/packages/standalone/current/codex"
+
+printf "path=%s\n" "$PATH"
+printf "home=%s\n" "$HOME"
+printf "local_bin=%s\n" "$local_bin"
+printf "codex_path=%s\n" "$codex_path"
+printf "local_codex=%s\n" "$local_codex"
+printf "standalone_codex=%s\n" "$standalone_codex"
+
+if [ -n "$codex_path" ]; then
+  printf "codex_status=path\n"
+  printf "codex_runnable=%s\n" "$codex_path"
+  printf "codex_version=%s\n" "$(codex --version 2>/dev/null || true)"
+elif [ -x "$local_codex" ]; then
+  printf "codex_status=installed_not_in_path\n"
+  printf "codex_runnable=%s\n" "$local_codex"
+  printf "codex_version=%s\n" "$("$local_codex" --version 2>/dev/null || true)"
+elif [ -x "$standalone_codex" ]; then
+  printf "codex_status=installed_not_in_path\n"
+  printf "codex_runnable=%s\n" "$standalone_codex"
+  printf "codex_version=%s\n" "$("$standalone_codex" --version 2>/dev/null || true)"
+else
+  printf "codex_status=missing\n"
+  printf "codex_runnable=\n"
+  printf "codex_version=\n"
+fi
+REMOTE_PROBE
+}
+
+remote_fix_codex_path() {
+  local alias="$1"
+  ssh -F "$SSH_CONFIG" "$alias" 'sh -s' <<'REMOTE_FIX_PATH'
+set -eu
+line='export PATH="$HOME/.local/bin:$PATH"'
+changed=0
+for file in "$HOME/.bashrc" "$HOME/.profile"; do
+  touch "$file"
+  if ! grep -Fq "$line" "$file"; then
+    printf "\n# Added by codex-ssh-manager so codex standalone is available in interactive shells\n%s\n" "$line" >> "$file"
+    changed=1
+  fi
+done
+printf "PATH_FIX_CHANGED=%s\n" "$changed"
+REMOTE_FIX_PATH
+}
+
 local_port_is_free() {
   local port="$1"
   if command -v nc >/dev/null 2>&1; then
@@ -604,9 +656,28 @@ print_manual_codex_install_commands() {
   dim "首次运行 codex 需要在远程完成登录。登录完成后，回到本菜单再次选择 7 检查。"
 }
 
+handle_codex_path_fix_prompt() {
+  local alias="$1" local_bin="$2"
+  say ""
+  status_item warn "PATH 修复" "Codex 已安装但 PATH 缺少 $local_bin" "写入 ~/.bashrc 和 ~/.profile 后，新开的远程 shell 就能直接运行 codex。"
+  if confirm "是否自动把 $local_bin 加入远程 PATH？" "y"; then
+    local fix_output
+    if fix_output="$(remote_fix_codex_path "$alias" 2>&1)"; then
+      status_item ok "PATH 修复" "已写入远程 shell 配置" "请重新 ssh 登录，或执行：source ~/.bashrc"
+      dim "$fix_output"
+    else
+      status_item bad "PATH 修复" "写入失败" "$fix_output"
+    fi
+  else
+    warn "已跳过 PATH 修复。你可以手动执行："
+    command_hint "echo 'export PATH=\"\\$HOME/.local/bin:\\$PATH\"' >> ~/.bashrc"
+    command_hint "source ~/.bashrc"
+  fi
+}
+
 remote_install_codex() {
   local alias="$1" kernel="$2" os_id="$3" os_like="$4"
-  local log_file ssh_status install_status install_reason codex_path codex_version
+  local log_file ssh_status install_status install_reason codex_path codex_path_status codex_version
 
   log_file="$(mktemp)"
   say ""
@@ -689,24 +760,39 @@ if ! run_sudo npm i -g @openai/codex; then
   fail "npm 全局安装 @openai/codex 失败。常见原因：网络无法访问 npm、权限不足、Node/npm 版本过旧。"
 fi
 
-if ! command -v codex >/dev/null 2>&1; then
-  fail "安装完成后仍无法在 PATH 中找到 codex。请检查 npm 全局 bin 目录是否在 PATH 中。"
+codex_path="$(command -v codex 2>/dev/null || true)"
+codex_path_status="path"
+if [ -z "$codex_path" ] && [ -x "$HOME/.local/bin/codex" ]; then
+  codex_path="$HOME/.local/bin/codex"
+  codex_path_status="installed_not_in_path"
+fi
+if [ -z "$codex_path" ] && [ -x "$HOME/.codex/packages/standalone/current/codex" ]; then
+  codex_path="$HOME/.codex/packages/standalone/current/codex"
+  codex_path_status="installed_not_in_path"
+fi
+if [ -z "$codex_path" ]; then
+  fail "安装完成后仍无法找到 codex。请检查 npm 全局 bin 目录或 standalone 安装目录。"
 fi
 
 printf '%s\n' "INSTALL_STATUS=ok"
-printf '%s\n' "CODEX_PATH=$(command -v codex)"
-printf '%s\n' "CODEX_VERSION=$(codex --version 2>/dev/null || true)"
+printf '%s\n' "CODEX_PATH=$codex_path"
+printf '%s\n' "CODEX_PATH_STATUS=$codex_path_status"
+printf '%s\n' "CODEX_VERSION=$("$codex_path" --version 2>/dev/null || true)"
 REMOTE_INSTALL
   ssh_status=${pipestatus[1]}
 
   install_status="$(awk -F '=' '$1 == "INSTALL_STATUS" { print $2 }' "$log_file" | tail -1)"
   install_reason="$(awk -F '=' '$1 == "INSTALL_REASON" { sub(/^[^=]*=/, ""); print }' "$log_file" | tail -1)"
   codex_path="$(awk -F '=' '$1 == "CODEX_PATH" { sub(/^[^=]*=/, ""); print }' "$log_file" | tail -1)"
+  codex_path_status="$(awk -F '=' '$1 == "CODEX_PATH_STATUS" { sub(/^[^=]*=/, ""); print }' "$log_file" | tail -1)"
   codex_version="$(awk -F '=' '$1 == "CODEX_VERSION" { sub(/^[^=]*=/, ""); print }' "$log_file" | tail -1)"
 
   say ""
   if [[ "$ssh_status" -eq 0 && "$install_status" == "ok" ]]; then
     status_item ok "自动安装" "Codex CLI 安装成功" "${codex_path:-codex}${codex_version:+ ($codex_version)}"
+    if [[ "$codex_path_status" == "installed_not_in_path" ]]; then
+      handle_codex_path_fix_prompt "$alias" "\$HOME/.local/bin"
+    fi
     say ""
     say "接下来请在远程主机完成 Codex 登录："
     command_hint "ssh $alias"
@@ -921,6 +1007,20 @@ codex_check_flow() {
     fi
     kernel="$(uname -s 2>/dev/null || true)"
     codex_path="$(command -v codex 2>/dev/null || true)"
+    local_codex="$HOME/.local/bin/codex"
+    standalone_codex="$HOME/.codex/packages/standalone/current/codex"
+    codex_status="missing"
+    codex_runnable=""
+    if [ -n "$codex_path" ]; then
+      codex_status="path"
+      codex_runnable="$codex_path"
+    elif [ -x "$local_codex" ]; then
+      codex_status="installed_not_in_path"
+      codex_runnable="$local_codex"
+    elif [ -x "$standalone_codex" ]; then
+      codex_status="installed_not_in_path"
+      codex_runnable="$standalone_codex"
+    fi
     node_path="$(command -v node 2>/dev/null || true)"
     npm_path="$(command -v npm 2>/dev/null || true)"
     printf "kernel=%s\n" "$kernel"
@@ -929,8 +1029,11 @@ codex_check_flow() {
     printf "os_like=%s\n" "${ID_LIKE:-}"
     printf "shell=%s\n" "$SHELL"
     printf "codex_path=%s\n" "$codex_path"
-    if [ -n "$codex_path" ]; then
-      printf "codex_version=%s\n" "$(codex --version 2>/dev/null || true)"
+    printf "codex_status=%s\n" "$codex_status"
+    printf "codex_runnable=%s\n" "$codex_runnable"
+    printf "local_bin=%s\n" "$HOME/.local/bin"
+    if [ -n "$codex_runnable" ]; then
+      printf "codex_version=%s\n" "$("$codex_runnable" --version 2>/dev/null || true)"
     else
       printf "codex_version=\n"
     fi
@@ -951,13 +1054,16 @@ codex_check_flow() {
     return 0
   fi
 
-  local kernel os os_id os_like shell_name codex_path codex_version node_path node_version npm_path npm_version
+  local kernel os os_id os_like shell_name codex_path codex_status codex_runnable local_bin codex_version node_path node_version npm_path npm_version
   kernel="$(kv_get "$remote_info" kernel)"
   os="$(kv_get "$remote_info" os)"
   os_id="$(kv_get "$remote_info" os_id)"
   os_like="$(kv_get "$remote_info" os_like)"
   shell_name="$(kv_get "$remote_info" shell)"
   codex_path="$(kv_get "$remote_info" codex_path)"
+  codex_status="$(kv_get "$remote_info" codex_status)"
+  codex_runnable="$(kv_get "$remote_info" codex_runnable)"
+  local_bin="$(kv_get "$remote_info" local_bin)"
   codex_version="$(kv_get "$remote_info" codex_version)"
   node_path="$(kv_get "$remote_info" node_path)"
   node_version="$(kv_get "$remote_info" node_version)"
@@ -981,20 +1087,26 @@ codex_check_flow() {
     status_item warn "npm" "未找到 npm" "无法通过 npm 安装 @openai/codex。"
   fi
 
-  if [[ -n "$codex_path" ]]; then
+  if [[ "$codex_status" == "path" ]]; then
     status_item ok "Codex CLI" "$codex_path ${codex_version:+($codex_version)}" "远程登录 shell 的 PATH 已经能找到 codex。"
+  elif [[ "$codex_status" == "installed_not_in_path" ]]; then
+    status_item warn "Codex CLI" "$codex_runnable ${codex_version:+($codex_version)}" "Codex 已安装，但远程 PATH 缺少 ${local_bin:-~/.local/bin}，直接输入 codex 会失败。"
   else
-    status_item warn "Codex CLI" "未安装，或不在远程 PATH 中" "这是你刚才看到 codex= 为空的原因；Codex App 目前还不能用这个远程 Host 启动 Codex。"
+    status_item warn "Codex CLI" "未安装" "未在 PATH 或 standalone 默认位置找到 codex。"
   fi
 
   say ""
-  if [[ -n "$codex_path" ]]; then
+  if [[ "$codex_status" == "path" ]]; then
     status_item ok "整体状态" "基本就绪" "接下来去 Codex App 的 Settings → Connections 中添加或启用 $alias。"
+  elif [[ "$codex_status" == "installed_not_in_path" ]]; then
+    status_item warn "整体状态" "需要修复 PATH" "Codex 已安装，但交互式 shell 不能直接运行 codex。"
   else
     status_item warn "整体状态" "还差 Codex CLI" "SSH 已通，但远程缺少 codex 命令。"
   fi
 
-  if [[ -z "$codex_path" ]]; then
+  if [[ "$codex_status" == "installed_not_in_path" ]]; then
+    handle_codex_path_fix_prompt "$alias" "${local_bin:-$HOME/.local/bin}"
+  elif [[ "$codex_status" == "missing" || -z "$codex_status" ]]; then
     say ""
     info "建议下一步"
     print_manual_codex_install_commands "$alias" "$kernel" "$os_id" "$os_like"
@@ -1030,11 +1142,24 @@ remote_codex_browser_login_flow() {
 
   say ""
   info "步骤 2/4：检查远程 Codex CLI"
-  if ! ssh -F "$SSH_CONFIG" "$alias" 'command -v codex >/dev/null 2>&1'; then
+  local probe codex_status codex_runnable local_bin
+  if ! probe="$(remote_codex_probe "$alias" 2>/dev/null)"; then
+    status_item bad "Codex CLI" "无法检查远程 codex" "请先通过菜单 7 查看远程环境。"
+    return 0
+  fi
+  codex_status="$(kv_get "$probe" codex_status)"
+  codex_runnable="$(kv_get "$probe" codex_runnable)"
+  local_bin="$(kv_get "$probe" local_bin)"
+  if [[ "$codex_status" == "missing" || -z "$codex_runnable" ]]; then
     status_item bad "Codex CLI" "远程未找到 codex" "请先通过菜单 7 检查并安装 Codex CLI。"
     return 0
   fi
-  status_item ok "Codex CLI" "远程已安装" "即将启动 codex login。"
+  if [[ "$codex_status" == "installed_not_in_path" ]]; then
+    status_item warn "Codex CLI" "$codex_runnable" "已安装但 PATH 缺少 $local_bin；本次会用完整路径启动。"
+    handle_codex_path_fix_prompt "$alias" "$local_bin"
+  else
+    status_item ok "Codex CLI" "$codex_runnable" "即将启动 codex login。"
+  fi
 
   say ""
   info "步骤 3/4：建立 localhost:$port 端口转发"
@@ -1071,7 +1196,7 @@ remote_codex_browser_login_flow() {
 
   {
     {
-      ssh -tt -F "$SSH_CONFIG" "$alias" 'codex login' 2>&1
+      ssh -tt -F "$SSH_CONFIG" "$alias" "'$codex_runnable' login" 2>&1
     } | while IFS= read -r line; do
       print -r -- "$line" | tee -a "$log_file"
       if [[ ! -s "$opened_url_file" && "$line" == https://auth.openai.com/* ]]; then
@@ -1118,14 +1243,26 @@ remote_codex_device_login_flow() {
     status_item bad "整体状态" "无法登录" "SSH 不通，无法启动远程 codex login --device-auth。"
     return 0
   fi
-  if ! ssh -F "$SSH_CONFIG" "$alias" 'command -v codex >/dev/null 2>&1'; then
+  local probe codex_status codex_runnable local_bin
+  if ! probe="$(remote_codex_probe "$alias" 2>/dev/null)"; then
+    status_item bad "Codex CLI" "无法检查远程 codex" "请先通过菜单 7 查看远程环境。"
+    return 0
+  fi
+  codex_status="$(kv_get "$probe" codex_status)"
+  codex_runnable="$(kv_get "$probe" codex_runnable)"
+  local_bin="$(kv_get "$probe" local_bin)"
+  if [[ "$codex_status" == "missing" || -z "$codex_runnable" ]]; then
     status_item bad "Codex CLI" "远程未找到 codex" "请先通过菜单 7 检查并安装 Codex CLI。"
     return 0
+  fi
+  if [[ "$codex_status" == "installed_not_in_path" ]]; then
+    status_item warn "Codex CLI" "$codex_runnable" "已安装但 PATH 缺少 $local_bin；本次会用完整路径启动。"
+    handle_codex_path_fix_prompt "$alias" "$local_bin"
   fi
 
   say ""
   status_item info "Device Auth" "无需 localhost 端口转发" "按远程输出的设备码和 URL 完成登录。"
-  ssh -tt -F "$SSH_CONFIG" "$alias" 'codex login --device-auth'
+  ssh -tt -F "$SSH_CONFIG" "$alias" "'$codex_runnable' login --device-auth"
 }
 
 remote_codex_login_flow() {
