@@ -14,16 +14,29 @@
 
 ## 一键安装
 
-在 macOS 终端执行：
+在 macOS 终端执行下面这条命令即可安装并启动向导：
 
 ```bash
-/bin/zsh -c 'tmpdir="$(mktemp -d)" && curl -fsSL https://codeload.github.com/leezhuuuuu/codex-ssh/tar.gz/refs/heads/main | tar -xz -C "$tmpdir" && /bin/zsh "$tmpdir"/codex-ssh-main/scripts/install.sh'
+curl -fsSL https://codex-ssh.leezhu.cn/install | zsh
 ```
 
-安装位置：
+安装脚本会下载最新源码包，并覆盖安装到：
 
 ```text
 ~/.local/bin/codex-ssh-manager
+```
+
+如果你本机代理导致域名访问异常，可以临时绕过代理再安装：
+
+```bash
+env -u https_proxy -u http_proxy -u all_proxy -u HTTPS_PROXY -u HTTP_PROXY -u ALL_PROXY \
+curl -fsSL https://codex-ssh.leezhu.cn/install | zsh
+```
+
+也可以不用自定义域名，直接使用 GitHub 源码包安装：
+
+```bash
+/bin/zsh -c 'tmpdir="$(mktemp -d)" && curl -fsSL https://codeload.github.com/leezhuuuuu/codex-ssh/tar.gz/refs/heads/main | tar -xz -C "$tmpdir" && /bin/zsh "$tmpdir"/codex-ssh-main/scripts/install.sh'
 ```
 
 如果 `~/.local/bin` 已经在 `PATH` 中，后续直接运行：
