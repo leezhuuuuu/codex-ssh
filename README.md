@@ -13,6 +13,7 @@
 - 更新、禁用或删除本工具创建的 Host 配置块
 - 用彩色状态摘要检查远程主机是否已准备好供 Codex App 使用
 - 远程缺少 Codex CLI 时，可在用户确认后自动尝试安装，并在失败时显示原因和手动安装命令
+- 登录远程 Codex CLI，可自动转发本机 `localhost:1455` 到远端回调端口，也支持 `device-auth`
 
 ## 使用
 
@@ -58,6 +59,14 @@ chmod +x scripts/codex-ssh-manager.zsh
 ```
 
 确认远程机器上是否能找到 `codex` 命令。
+
+如果远程 Codex CLI 尚未登录，可以选择：
+
+```text
+8. 登录远程 Codex CLI
+```
+
+浏览器登录模式会自动建立本机 `localhost:1455` 到远程 `127.0.0.1:1455` 的 SSH 端口转发，让远程 `codex login` 的 OAuth 回调可以回到远端登录服务。也可以选择 `device-auth` 模式，不需要端口转发。
 
 ## 安全测试
 

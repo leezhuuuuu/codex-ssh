@@ -557,6 +557,27 @@ kv_get() {
   print -r -- "$text" | awk -F '=' -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }'
 }
 
+local_port_is_free() {
+  local port="$1"
+  if command -v nc >/dev/null 2>&1; then
+    ! nc -z 127.0.0.1 "$port" >/dev/null 2>&1
+    return $?
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    ! lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+    return $?
+  fi
+  return 0
+}
+
+open_auth_url() {
+  local url="$1"
+  [[ -z "$url" ]] && return 0
+  if command -v open >/dev/null 2>&1; then
+    open "$url" >/dev/null 2>&1 || true
+  fi
+}
+
 print_manual_codex_install_commands() {
   local alias="$1" kernel="$2" os_id="$3" os_like="$4"
 
@@ -992,6 +1013,134 @@ codex_check_flow() {
   dim "Codex App 要求：本机 ssh $alias 成功，并且远程登录 shell 的 PATH 中能找到 codex。"
 }
 
+remote_codex_browser_login_flow() {
+  ensure_files
+  say ""
+  info "远程 Codex 浏览器登录"
+  choose_host "no" || return 0
+  local alias="$CHOSEN_HOST"
+  local port="${CODEX_LOGIN_PORT:-1455}"
+  local tunnel_pid="" login_status=0 opened_url_file log_file
+
+  opened_url_file="$(mktemp)"
+  log_file="$(mktemp)"
+
+  say ""
+  info "步骤 1/4：检查 SSH"
+  if ! test_ssh_alias "$alias"; then
+    status_item bad "整体状态" "无法登录" "SSH 不通，无法启动远程 codex login。"
+    return 0
+  fi
+
+  say ""
+  info "步骤 2/4：检查远程 Codex CLI"
+  if ! ssh -F "$SSH_CONFIG" "$alias" 'command -v codex >/dev/null 2>&1'; then
+    status_item bad "Codex CLI" "远程未找到 codex" "请先通过菜单 7 检查并安装 Codex CLI。"
+    return 0
+  fi
+  status_item ok "Codex CLI" "远程已安装" "即将启动 codex login。"
+
+  say ""
+  info "步骤 3/4：建立 localhost:$port 端口转发"
+  if ! local_port_is_free "$port"; then
+    status_item bad "本机端口" "localhost:$port 已被占用" "Codex 登录回调固定使用 localhost:$port；请关闭占用该端口的程序后重试。"
+    if command -v lsof >/dev/null 2>&1; then
+      say ""
+      info "占用端口的进程"
+      lsof -nP -iTCP:"$port" -sTCP:LISTEN || true
+    fi
+    return 0
+  fi
+
+  ssh -F "$SSH_CONFIG" \
+    -o ExitOnForwardFailure=yes \
+    -o ServerAliveInterval=30 \
+    -o ServerAliveCountMax=2 \
+    -N -L "${port}:127.0.0.1:${port}" "$alias" &
+  tunnel_pid=$!
+  sleep 1
+
+  if ! kill -0 "$tunnel_pid" >/dev/null 2>&1; then
+    status_item bad "端口转发" "启动失败" "命令：ssh -N -L ${port}:127.0.0.1:${port} $alias"
+    return 0
+  fi
+  status_item ok "端口转发" "localhost:$port -> $alias:127.0.0.1:$port" "浏览器回调会从你的 Mac 转发到远程 codex login。"
+
+  say ""
+  info "步骤 4/4：启动远程 codex login"
+  dim "看到 auth.openai.com URL 后，脚本会尝试自动打开浏览器；如果没有打开，请复制终端里的 URL。"
+  warn "登录完成前请不要关闭本窗口；完成或中断后脚本会关闭端口转发。"
+  say ""
+
+  {
+    {
+      ssh -tt -F "$SSH_CONFIG" "$alias" 'codex login' 2>&1
+    } | while IFS= read -r line; do
+      print -r -- "$line" | tee -a "$log_file"
+      if [[ ! -s "$opened_url_file" && "$line" == https://auth.openai.com/* ]]; then
+        print -r -- "$line" > "$opened_url_file"
+        say ""
+        status_item ok "登录 URL" "已捕获并尝试打开浏览器" "$line"
+        open_auth_url "$line"
+        say ""
+      fi
+    done
+    login_status=${pipestatus[1]}
+  } always {
+    say ""
+    if [[ -n "$tunnel_pid" ]] && kill -0 "$tunnel_pid" >/dev/null 2>&1; then
+      kill "$tunnel_pid" >/dev/null 2>&1 || true
+      wait "$tunnel_pid" 2>/dev/null || true
+      status_item ok "端口转发" "已关闭" "localhost:$port 转发进程已清理。"
+    fi
+  }
+
+  if [[ "$login_status" -eq 0 ]]; then
+    status_item ok "登录流程" "远程 codex login 已结束" "如浏览器显示授权完成，远程 Codex CLI 应已登录。"
+  else
+    status_item warn "登录流程" "codex login 未正常结束" "如果你按了 Ctrl-C 或浏览器未完成回调，可以重新运行本功能。日志：$log_file"
+  fi
+
+  say ""
+  dim "也可以使用无需端口转发的方式：codex login --device-auth。"
+}
+
+remote_codex_device_login_flow() {
+  ensure_files
+  say ""
+  info "远程 Codex Device Auth 登录"
+  choose_host "no" || return 0
+  local alias="$CHOSEN_HOST"
+
+  if ! test_ssh_alias "$alias"; then
+    status_item bad "整体状态" "无法登录" "SSH 不通，无法启动远程 codex login --device-auth。"
+    return 0
+  fi
+  if ! ssh -F "$SSH_CONFIG" "$alias" 'command -v codex >/dev/null 2>&1'; then
+    status_item bad "Codex CLI" "远程未找到 codex" "请先通过菜单 7 检查并安装 Codex CLI。"
+    return 0
+  fi
+
+  say ""
+  status_item info "Device Auth" "无需 localhost 端口转发" "按远程输出的设备码和 URL 完成登录。"
+  ssh -tt -F "$SSH_CONFIG" "$alias" 'codex login --device-auth'
+}
+
+remote_codex_login_flow() {
+  ensure_files
+  say ""
+  info "登录远程 Codex CLI"
+  say "1. 浏览器登录，自动转发 localhost:1455"
+  say "2. Device Auth 登录，不需要端口转发"
+  say "3. 返回"
+  prompt "请选择" "1"
+  case "$REPLY" in
+    1) remote_codex_browser_login_flow ;;
+    2) remote_codex_device_login_flow ;;
+    *) return 0 ;;
+  esac
+}
+
 diagnose_flow() {
   ensure_files
   say ""
@@ -1024,8 +1173,9 @@ main_menu() {
     say "5. 更新 SSH Host 配置"
     say "6. 禁用或删除 Host"
     say "7. 检查 Codex App 远程连接准备情况"
-    say "8. 诊断连接问题"
-    say "9. 退出"
+    say "8. 登录远程 Codex CLI"
+    say "9. 诊断连接问题"
+    say "10. 退出"
     say ""
     prompt "请选择" "1"
     case "$REPLY" in
@@ -1036,9 +1186,10 @@ main_menu() {
       5) update_host_flow; pause ;;
       6) disable_or_delete_flow; pause ;;
       7) codex_check_flow; pause ;;
-      8) diagnose_flow; pause ;;
-      9|q|quit|exit) say "再见。"; return 0 ;;
-      *) warn "请输入 1-9。"; sleep 1 ;;
+      8) remote_codex_login_flow; pause ;;
+      9) diagnose_flow; pause ;;
+      10|q|quit|exit) say "再见。"; return 0 ;;
+      *) warn "请输入 1-10。"; sleep 1 ;;
     esac
   done
 }
