@@ -66,7 +66,7 @@ chmod +x scripts/codex-ssh-manager.zsh
 8. 登录远程 Codex CLI
 ```
 
-浏览器登录模式会自动建立本机 `localhost:1455` 到远程 `127.0.0.1:1455` 的 SSH 端口转发，让远程 `codex login` 的 OAuth 回调可以回到远端登录服务。也可以选择 `device-auth` 模式，不需要端口转发。
+浏览器登录模式会自动建立本机 `localhost:1455` 到远程 `127.0.0.1:1455` 的 SSH 端口转发，让远程 `codex login` 的 OAuth 回调可以回到远端登录服务。脚本只会显示登录 URL，不会自动打开浏览器；你可以复制到自己选择的浏览器中打开。也可以选择 `device-auth` 模式，不需要端口转发。
 
 ## 安全测试
 

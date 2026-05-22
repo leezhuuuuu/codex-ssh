@@ -68,6 +68,10 @@ command_hint() {
   say "    ${C_CYAN}$*${C_RESET}"
 }
 
+url_hint() {
+  say "    ${C_BOLD}${C_CYAN}$*${C_RESET}"
+}
+
 pause() {
   print -n -- "${C_DIM}按回车继续...${C_RESET}"
   read -r _
@@ -570,14 +574,6 @@ local_port_is_free() {
   return 0
 }
 
-open_auth_url() {
-  local url="$1"
-  [[ -z "$url" ]] && return 0
-  if command -v open >/dev/null 2>&1; then
-    open "$url" >/dev/null 2>&1 || true
-  fi
-}
-
 print_manual_codex_install_commands() {
   local alias="$1" kernel="$2" os_id="$3" os_like="$4"
 
@@ -1068,7 +1064,8 @@ remote_codex_browser_login_flow() {
 
   say ""
   info "步骤 4/4：启动远程 codex login"
-  dim "看到 auth.openai.com URL 后，脚本会尝试自动打开浏览器；如果没有打开，请复制终端里的 URL。"
+  dim "看到 auth.openai.com URL 后，脚本只会显示链接，不会自动打开浏览器。"
+  dim "请复制链接到你自己选择的浏览器中完成登录。"
   warn "登录完成前请不要关闭本窗口；完成或中断后脚本会关闭端口转发。"
   say ""
 
@@ -1080,8 +1077,8 @@ remote_codex_browser_login_flow() {
       if [[ ! -s "$opened_url_file" && "$line" == https://auth.openai.com/* ]]; then
         print -r -- "$line" > "$opened_url_file"
         say ""
-        status_item ok "登录 URL" "已捕获并尝试打开浏览器" "$line"
-        open_auth_url "$line"
+        status_item ok "登录 URL" "已捕获，请手动复制到浏览器打开"
+        url_hint "$line"
         say ""
       fi
     done
@@ -1099,6 +1096,11 @@ remote_codex_browser_login_flow() {
     status_item ok "登录流程" "远程 codex login 已结束" "如浏览器显示授权完成，远程 Codex CLI 应已登录。"
   else
     status_item warn "登录流程" "codex login 未正常结束" "如果你按了 Ctrl-C 或浏览器未完成回调，可以重新运行本功能。日志：$log_file"
+    if grep -qi "Country, region, or territory not supported" "$log_file"; then
+      status_item bad "失败原因" "远端出口地区不受支持" "OpenAI token exchange 返回 403；请检查远端服务器出口网络或改用受支持地区的远端环境。"
+    elif grep -qi "Token exchange.*403\\|403 Forbidden" "$log_file"; then
+      status_item bad "失败原因" "Token exchange 被拒绝" "日志中出现 403，通常与远端出口地区、网络策略或账号访问环境有关。"
+    fi
   fi
 
   say ""
