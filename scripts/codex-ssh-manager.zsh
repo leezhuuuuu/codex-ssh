@@ -38,6 +38,14 @@ warn() { say "${C_YELLOW}!${C_RESET} $*"; }
 err() { say "${C_RED}✗${C_RESET} $*" >&2; }
 dim() { say "${C_DIM}$*${C_RESET}"; }
 
+interactive_input_error() {
+  say "" >&2
+  err "当前没有可用的交互式输入，向导已停止。"
+  say "如果你是通过 curl 管道启动安装脚本，请先重新安装最新版，或安装后直接运行：" >&2
+  say "  $SCRIPT_PATH" >&2
+  exit 1
+}
+
 status_item() {
   local state="$1" title="$2" value="${3:-}" detail="${4:-}"
   local marker label color
@@ -74,7 +82,7 @@ url_hint() {
 
 pause() {
   print -n -- "${C_DIM}按回车继续...${C_RESET}"
-  read -r _
+  read -r _ || true
 }
 
 prompt() {
@@ -86,7 +94,7 @@ prompt() {
   else
     print -n -- "${C_CYAN}?${C_RESET} $label: "
   fi
-  read -r value
+  read -r value || interactive_input_error
   if [[ -z "$value" && -n "$default" ]]; then
     value="$default"
   fi
@@ -104,7 +112,7 @@ confirm() {
   fi
   while true; do
     print -n -- "${C_CYAN}?${C_RESET} $label ${C_DIM}[$hint]${C_RESET}: "
-    read -r answer
+    read -r answer || interactive_input_error
     [[ -z "$answer" ]] && answer="$default"
     case "${answer:l}" in
       y|yes) return 0 ;;

@@ -87,7 +87,12 @@ main() {
 
   say ""
   info "启动管理向导"
-  exec "$INSTALL_PATH"
+  if { : </dev/tty } 2>/dev/null; then
+    exec "$INSTALL_PATH" </dev/tty
+  fi
+
+  warn "当前没有可用的交互式终端，已完成安装但不自动启动。"
+  say "请手动运行：$INSTALL_PATH"
 }
 
 main "$@"
